@@ -17,9 +17,11 @@ import re
 import json
 
 # https://stackoverflow.com/questions/58178719/append-pandas-dataframe-to-excelsheet-not-overwrite-it?noredirect=1&lq=1
-#using df_from_excel (given by stackoverflow.com/questions/41722374/pandas-read-excel-values-not-formulas)
+# using df_from_excel (given by stackoverflow.com/questions/41722374/pandas-read-excel-values-not-formulas)
 # df_from_excel used as pandas is reading formulas as NaN
 import xlwings as xl
+
+
 def df_from_excel(path, sheet_name):
     book = load_workbook(path)
     writer = pd.ExcelWriter(path, engine='openpyxl')
@@ -31,7 +33,6 @@ def df_from_excel(path, sheet_name):
     writer.save()
     writer.close()
     return pd.read_excel(path, sheet_name)
-
 
 
 def search_player_id(dict_player, fullname):
@@ -64,8 +65,9 @@ def player_stat_average(player_name, average_num_games):
     sleep(0.25)
 
     data = player_gamelog.get_data_frames()[0][required_stats]
-    num_games_include = average_num_games if len(data.index) >= average_num_games else  len(data.index)
-    data_points_mean = data.iloc[range(num_games_include), :].describe().loc["mean"]  # gets the category stats and finds mean from last x games
+    num_games_include = average_num_games if len(data.index) >= average_num_games else len(data.index)
+    data_points_mean = data.iloc[range(num_games_include), :].describe().loc[
+        "mean"]  # gets the category stats and finds mean from last x games
     data_points_mean = pd.concat([pd.Series({'Player_Name': player_name}), data_points_mean])
 
     return data_points_mean.rename(str(player_id))  # allows index to be player id in the dataframe
@@ -97,148 +99,72 @@ def create_team_db(rosters):
 
         team_average_df = team_average_df.append(team_averaging)
 
+    player_df.to_pickle('./dataframes/player_df')
+    team_average_df.to_pickle('./dataframes/team_df')
+
     return team_average_df, player_df
+
 
 def create_head2head_db(team_average_df):
     i = 0
-    buffer = 0.05  # buffer is used so that wins are not declared on tight calls
+    # fix TOV
+    buffer = 0.02  # buffer is used so that wins are not declared on tight calls
     results = np.empty(shape=(len(team_average_df.index), len(team_average_df.index)), dtype=object)
     for team1, data_series1 in team_average_df.iterrows():
         ii = 0
         for team2, data_series2 in team_average_df.iterrows():
-            test = data_series1 > (data_series2 + buffer * data_series2)
-            won = sum(test)
-            test = data_series1 < (data_series2 - buffer * data_series2)
-            lost = sum(test)
-            drew = len(test) - won - lost
+            test = data_series1[:8] > (data_series2[:8] + buffer * data_series2[:8])
+            test_TOV = data_series1[8] < (data_series2[8] - buffer * data_series2[8])
+            won = sum(test) + test_TOV
+            test = data_series1[:8] < (data_series2[:8] - buffer * data_series2[:8])
+            test_TOV = data_series1[8] > (data_series2[8] + buffer * data_series2[8])
+            lost = sum(test) + test_TOV
+            drew = len(data_series2) - won - lost
             results[i][ii] = f'{won}-{drew}-{lost}'
             ii += 1
+            if data_series1.index[8] != 'TOV':
+                raise Exception(f'TOV no longer 8th index')
+
         i += 1
     return pd.DataFrame(results, index=list(team_average_df.index), columns=list(team_average_df.index))
 
 
+def rank_team_categories(team_average_df):
+    rank_df1 = team_average_df1.iloc[:, :8].rank(ascending = False)
+    rank_df2 = team_average_df1.iloc[:, 8].rank(ascending = True)
+    result = pd.concat([rank_df1, rank_df2], axis=1)
+    return result
 
-rosters = df_from_excel(path = 'league_analysis.xlsx', sheet_name='team_roster')
-average_of_games = 11
+
+rosters = pd.read_excel('static_league_analysis.xlsx', 'team_roster')
+average_of_games = 15
 team_number = 12
 num_active_players = 10
 team_names = rosters.loc[range(team_number), 'Teams']
 required_stats = ['FGM', 'FGA', 'FG_PCT', 'FG3M', 'FTM', 'FTA', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'PTS']
-
+update_data_flag = 1
 
 # find team roster averages and player stats
-team_average_df1, player_df1 = create_team_db(rosters)
-
+if update_data_flag:
+    team_average_df1, player_df1 = create_team_db(rosters)
+else:
+    team_average_df1 = pd.read_pickle('./dataframes/team_df')
+    player_df1 = pd.read_pickle('./dataframes/player_df')
 head2head_df = create_head2head_db(team_average_df1)
+team_ranking = rank_team_categories(team_average_df1)
+# options = {}
+# options['strings_to_formulas'] = False
+# options['strings_to_urls'] = False
+with pd.ExcelWriter('python_league_analysis.xlsx', engine='openpyxl') as writer:
+# writer = pd.ExcelWriter('python_league_analysis.xlsx', engine='openpyxl')
+    rosters.iloc[:, 1:].to_excel(writer, sheet_name='rosters')
+    player_df1.to_excel(writer, sheet_name='player_averages')
+    team_average_df1.to_excel(writer, sheet_name='team_averages')
+    head2head_df.to_excel(writer, sheet_name='team_Head2Head')
+    team_ranking.to_excel(writer, sheet_name='team_ranking')
 
-options = {}
-options['strings_to_formulas'] = False
-options['strings_to_urls'] = False
-
-book = load_workbook('league_analysis.xlsx')
-writer = pd.ExcelWriter('league_analysis.xlsx', engine='openpyxl')
-writer.book = book
-## ExcelWriter for some reason uses writer.sheets to access the sheet.
-## If you leave it empty it will not know that sheet Main is already there
-## and will create a new sheet.
-writer.sheets = dict((ws.title, ws) for ws in book.worksheets)
-player_df1.to_excel(writer, sheet_name='player_averages')
-team_average_df1.to_excel(writer, sheet_name='team_averages')
-head2head_df.to_excel(writer, sheet_name='team_Head2Head')
+with pd.ExcelWriter('python_league_analysis.xlsx', engine='openpyxl', mode='a') as writer:
+    team_ranking.sum(axis = 1).sort_values(ascending = True).to_excel(writer, sheet_name='team_ranking')
 # data_filtered.to_excel(writer, "Main", cols=['Diff1', 'Diff2'])
-writer.save()
-writer.close()
-
-
-# book = load_workbook('league_analysis.xlsx')
-# with pd.ExcelWriter('league_analysis.xlsx') as writer: # , engine = 'openpyxl'
-#     writer.book = book
-#     player_df1.to_excel(writer, sheet_name='player_averages')
-#     team_average_df1.to_excel(writer, sheet_name='team_averages')
-#     head2head_df.to_excel(writer, sheet_name='team_Head2Head')
-
-
-
-# z = player_stat_average('Luka Doncic', 3)
-
-# print whole sheet data
-
-
-# x = players.find_players_by_full_name('Luka Doncic')
-
-# #Call the API endpoint passing in lebron's ID & which season 
-# gamelog_bron = playergamelog.PlayerGameLog(player_id='2544', season = '2021')
-
-# #Converts gamelog object into a pandas dataframe
-# #can also convert to JSON or dictionary  
-# df_bron_games_2018 = gamelog_bron.get_data_frames()
-
-# # If you want all seasons, you must import the SeasonAll parameter 
-# from nba_api.stats.library.parameters import SeasonAll
-
-# gamelog_bron_all = playergamelog.PlayerGameLog(player_id='2544', season = SeasonAll.all)
-
-# df_bron_games_all = gamelog_bron_all.get_data_frames()
-
-
-# import requests
-
-# #url
-# url = 'https://stats.nba.com/stats/leaguedashplayerstats?'
-
-# #request headers
-# request_headers = {
-# 'Accept': 'application/json, text/plain, */*',
-# 'Accept-Encoding':'gzip, deflate, br',
-# 'Accept-Language': 'en-US,en;q=0.9',
-# 'Connection': 'keep-alive',
-# 'Host': 'stats.nba.com',
-# 'Origin': 'https://www.nba.com',
-# 'Referer': 'https://www.nba.com/',
-# 'Sec-Fetch-Dest': 'empty',
-# 'Sec-Fetch-Mode': 'cors',
-# 'Sec-Fetch-Site': 'same-site',
-# 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.104 Safari/537.36',
-# 'x-nba-stats-origin': 'stats',
-# 'x-nba-stats-token': 'true',
-# }
-
-# #params
-# parameters = {
-# 'College':'' ,
-# 'Conference':'',
-# 'Country':'' ,
-# 'DateFrom': '',
-# 'DateTo': '',
-# 'Division': '',
-# 'DraftPick': '',
-# 'DraftYear': '',
-# 'GameScope': '',
-# 'GameSegment': '', 
-# 'Height': '',
-# 'LastNGames': 0,
-# 'LeagueID': 00,
-# 'Location': '',
-# 'MeasureType': 'Base',
-# 'Month': 0,
-# 'OpponentTeamID': 0,
-# 'Outcome': '',
-# 'PORound': 0,
-# 'PaceAdjust': 'N',
-# 'PerMode': 'PerGame',
-# 'Period': 0,
-# 'PlayerExperience': '',
-# 'PlayerPosition': '',
-# 'PlusMinus': 'N',
-# 'Rank': 'N',
-# 'Season': '2020-21',
-# 'SeasonSegment': '',
-# 'SeasonType': 'Regular Season',
-# 'ShotClockRange': '',
-# 'StarterBench': '',
-# 'TeamID': 0,
-# 'TwoWay': 0,
-# 'VsConference': '',
-# 'VsDivision': '',
-# 'Weight': ''
-#     }
+# writer.save()
+# writer.close()
